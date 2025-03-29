@@ -1,131 +1,100 @@
-/**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
- * @format
- */
+import React, { useEffect, useRef, useState } from 'react';
+import { StyleSheet, View, Text } from 'react-native';
+import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
+import { Dimensions } from 'react-native';
+const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
-import React from 'react';
-import type {PropsWithChildren} from 'react';
-import {
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  useColorScheme,
-  View,
-} from 'react-native';
+export default function App() {
+  
+  const device = useCameraDevice('back');
+  const { hasPermission, requestPermission } = useCameraPermission();
+  const cameraRef = useRef(null);
+  const ws = useRef(null);
+  const [detections, setDetections] = useState([]);
 
-import {
-  Colors,
-  DebugInstructions,
-  Header,
-  LearnMoreLinks,
-  ReloadInstructions,
-} from 'react-native/Libraries/NewAppScreen';
+  useEffect(() => {
+    if (!hasPermission) requestPermission();
+  }, [hasPermission]);
 
-type SectionProps = PropsWithChildren<{
-  title: string;
-}>;
+  useEffect(() => {
+    ws.current = new WebSocket('ws://192.168.78.9:8000/detect-websocket');
 
-function Section({children, title}: SectionProps): React.JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
-  return (
-    <View style={styles.sectionContainer}>
-      <Text
-        style={[
-          styles.sectionTitle,
-          {
-            color: isDarkMode ? Colors.white : Colors.black,
-          },
-        ]}>
-        {title}
-      </Text>
-      <Text
-        style={[
-          styles.sectionDescription,
-          {
-            color: isDarkMode ? Colors.light : Colors.dark,
-          },
-        ]}>
-        {children}
-      </Text>
-    </View>
-  );
-}
+    ws.current.onopen = () => console.log('WebSocket connected');
+    ws.current.onmessage = (e) => {
+      try {
+        const json = JSON.parse(e.data);
+        setDetections(json.detections || []);
+      } catch (err) {
+        console.error('Failed to parse detection JSON:', err);
+      }
+    };
+    ws.current.onerror = (e) => console.error(e.message);
+    ws.current.onclose = () => console.log('WebSocket closed');
 
-function App(): React.JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
+    return () => ws.current?.close();
+  }, []);
 
-  const backgroundStyle = {
-    backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
+  const captureAndSend = async () => {
+    if (cameraRef.current && ws.current.readyState === WebSocket.OPEN) {
+      const photo = await cameraRef.current.takePhoto({ quality: 50, skipMetadata: true });
+      const response = await fetch(`file://${photo.path}`);
+      const blob = await response.blob();
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64data = reader.result.split(',')[1];
+        ws.current.send(base64data);
+      };
+      reader.readAsDataURL(blob);
+    }
   };
 
-  /*
-   * To keep the template simple and small we're adding padding to prevent view
-   * from rendering under the System UI.
-   * For bigger apps the reccomendation is to use `react-native-safe-area-context`:
-   * https://github.com/AppAndFlow/react-native-safe-area-context
-   *
-   * You can read more about it here:
-   * https://github.com/react-native-community/discussions-and-proposals/discussions/827
-   */
-  const safePadding = '5%';
+  useEffect(() => {
+    const intervalId = setInterval(captureAndSend, 100);
+    return () => clearInterval(intervalId);
+  }, []);
+
+  if (!hasPermission || !device) return <Text>Loading camera...</Text>;
 
   return (
-    <View style={backgroundStyle}>
-      <StatusBar
-        barStyle={isDarkMode ? 'light-content' : 'dark-content'}
-        backgroundColor={backgroundStyle.backgroundColor}
+    <View style={StyleSheet.absoluteFill}>
+      <Camera
+        ref={cameraRef}
+        style={StyleSheet.absoluteFill}
+        device={device}
+        isActive={true}
+        photo={true}
       />
-      <ScrollView
-        style={backgroundStyle}>
-        <View style={{paddingRight: safePadding}}>
-          <Header/>
-        </View>
-        <View
-          style={{
-            backgroundColor: isDarkMode ? Colors.black : Colors.white,
-            paddingHorizontal: safePadding,
-            paddingBottom: safePadding,
-          }}>
-          <Section title="Step One">
-            Edit <Text style={styles.highlight}>App.tsx</Text> to change this
-            screen and then come back to see your edits.
-          </Section>
-          <Section title="See Your Changes">
-            <ReloadInstructions />
-          </Section>
-          <Section title="Debug">
-            <DebugInstructions />
-          </Section>
-          <Section title="Learn More">
-            Read the docs to discover what to do next:
-          </Section>
-          <LearnMoreLinks />
-        </View>
-      </ScrollView>
+      {detections.map((d, i) => {
+        
+        console.log("screenWidth: " + screenWidth);
+        console.log("screenHeight: " + screenHeight);
+        const [x1, y1, x2, y2] = d.bounding_box;
+        const left = x1 * screenWidth;
+        const top = y1 * screenHeight;
+        const boxWidth = (x2 - x1) * screenWidth;
+        const boxHeight = (y2 - y1) * screenHeight;
+
+        console.log(left,top,boxWidth,boxHeight);
+        return (
+          <View
+            key={i}
+            style={{
+              position: 'absolute',
+              left,
+              top,
+              width: boxWidth,
+              height: boxHeight,
+              borderColor: 'lime',
+              borderWidth: 2,
+            }}
+            
+            >
+            <Text style={{ color: 'white', backgroundColor: 'black', fontSize: 10 }}>
+              {d.class_name} ({Math.round(d.confidence * 100)}%)
+            </Text>
+          </View>
+        );
+      })}
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  sectionContainer: {
-    marginTop: 32,
-    paddingHorizontal: 24,
-  },
-  sectionTitle: {
-    fontSize: 24,
-    fontWeight: '600',
-  },
-  sectionDescription: {
-    marginTop: 8,
-    fontSize: 18,
-    fontWeight: '400',
-  },
-  highlight: {
-    fontWeight: '700',
-  },
-});
-
-export default App;
